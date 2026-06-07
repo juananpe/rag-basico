@@ -1,18 +1,24 @@
 """
-Test script for pdf_loader.load_pdf — RAG pipeline with ChromaDB + OpenRouter.
+Test script for RAG pipeline with ChromaDB + OpenRouter.
+
+Accepts both PDF and TXT files.
 
 Usage:
-    python test_load_pdf.py sample.pdf
-    python test_load_pdf.py sample.pdf --query "¿Cuál es la misión del plan Gazteria?"
+    python test_load.py sample.pdf
+    python test_load.py sample.txt
+    python test_load.py sample.pdf --query "¿Cuál es la misión del plan Gazteria?"
+    python test_load.py es-bases.txt --collection bases_especificas_2026 --query "cuáles son los criterios de valoración"
 """
 
 import argparse
 import os
 import re
+from pathlib import Path
 
 import chromadb
 import requests
 from dotenv import load_dotenv
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from openrouter_embedding import OpenRouterEmbedding
@@ -87,19 +93,50 @@ def generar_respuesta(api_key: str, pregunta: str,
     return respuesta
 
 
+def load_txt(txt_path: str, chunk_size: int = 800) -> list[Document]:
+    """Lee un archivo .txt y devuelve una lista de Document (uno por bloque).
+
+    Si el archivo es muy largo, se divide en bloques de chunk_size líneas
+    para que cada Document tenga un tamaño razonable.
+    """
+    path = Path(txt_path)
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    # Si el archivo tiene pocas líneas, un solo Document; si no, bloques.
+    if len(lines) <= chunk_size:
+        return [Document(
+            page_content=text,
+            metadata={"source": path.name, "page": 0, "total_pages": 1},
+        )]
+
+    documents: list[Document] = []
+    for i in range(0, len(lines), chunk_size):
+        block = "\n".join(lines[i:i + chunk_size])
+        documents.append(Document(
+            page_content=block,
+            metadata={
+                "source": path.name,
+                "page": i // chunk_size,
+                "total_pages": (len(lines) + chunk_size - 1) // chunk_size,
+            },
+        ))
+    return documents
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Load a PDF into ChromaDB and query it with RAG."
+        description="Load a PDF or TXT file into ChromaDB and query it with RAG."
     )
-    parser.add_argument("pdf_path", help="Path to the PDF file")
+    parser.add_argument("file_path", help="Path to the PDF or TXT file")
     parser.add_argument(
         "--preview-chars",
         type=int,
         default=500,
-        help="Number of characters to print per page. Default: 500",
+        help="Number of characters to print per page/block. Default: 500",
     )
     parser.add_argument(
         "--query",
@@ -127,8 +164,8 @@ def main() -> None:
     parser.add_argument(
         "--collection",
         type=str,
-        default="plan_donostia_gazteria",
-        help="ChromaDB collection name. Default: plan_donostia_gazteria",
+        default=None,
+        help="ChromaDB collection name. Default: derived from filename.",
     )
 
     args = parser.parse_args()
@@ -141,19 +178,33 @@ def main() -> None:
             "Asegúrate de tenerla en un archivo .env."
         )
 
-    # ── 1. Cargar PDF ──────────────────────────────────────────────────
-    print(f"📄 Cargando PDF: {args.pdf_path}")
-    documents = load_pdf(args.pdf_path)
-    print(f"   → {len(documents)} páginas cargadas\n")
+    # ── 0. Detectar tipo de archivo ────────────────────────────────────
+    path = Path(args.file_path)
+    ext = path.suffix.lower()
+    if ext not in (".pdf", ".txt"):
+        raise ValueError(f"Formato no soportado: '{ext}'. Usa .pdf o .txt")
+
+    if args.collection is None:
+        args.collection = path.stem.replace(" ", "_").lower()
+
+    # ── 1. Cargar documento ────────────────────────────────────────────
+    if ext == ".pdf":
+        print(f"📄 Cargando PDF: {args.file_path}")
+        documents = load_pdf(args.file_path)
+        print(f"   → {len(documents)} páginas cargadas\n")
+    else:
+        print(f"📄 Cargando TXT: {args.file_path}")
+        documents = load_txt(args.file_path)
+        print(f"   → {len(documents)} bloques cargados\n")
 
     # Vista previa
     for index, document in enumerate(documents, start=1):
-        print(f"--- Page {index} ---")
+        print(f"--- Block {index} ---")
         print(document.page_content[: args.preview_chars])
         print(f"   Metadata: {document.metadata}")
         print()
 
-    # ── 2. Dividir en chunks ───────────────────────────────────────────
+    # ─ 2. Dividir en chunks ───────────────────────────────────────────
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
         chunk_overlap=200,
@@ -169,7 +220,7 @@ def main() -> None:
     if args.force_reindex:
         try:
             client.delete_collection(name=nombre)
-            print(f"🗑️  Colección '{nombre}' eliminada para reindexado.")
+            print(f"️  Colección '{nombre}' eliminada para reindexado.")
         except Exception:
             pass
 
@@ -177,7 +228,7 @@ def main() -> None:
     embed_fn = OpenRouterEmbedding(api_key, model_name=args.embedding_model)
 
     if nombre not in colecciones:
-        print(f"🛠️  Creando colección '{nombre}' con embeddings...")
+        print(f"️  Creando colección '{nombre}' con embeddings...")
         collection = client.create_collection(
             name=nombre,
             embedding_function=embed_fn,  # type: ignore
@@ -197,7 +248,7 @@ def main() -> None:
         print(f"📚 Colección '{nombre}' ya existe "
               f"({collection.count()} vectores). Usando datos existentes.")
 
-    # ── 5. Consultar ───────────────────────────────────────────────────
+    # ─ 5. Consultar ───────────────────────────────────────────────────
     pregunta = args.query
     print(f"\n🔍 Consulta: {pregunta}\n")
     resultados = collection.query(

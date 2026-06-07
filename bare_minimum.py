@@ -72,7 +72,7 @@ if nombre not in colecciones:
     # 3. Embedding + 4. Guardar en ChromaDB
     embed_fn = OpenRouterEmbedding(OPENROUTER_API_KEY)
     collection = client.create_collection(
-        name=nombre, embedding_function=embed_fn)
+        name=nombre, embedding_function=embed_fn) # type: ignore
     collection.add(
         documents=[limpiar(c.page_content) for c in chunks],
         metadatas=[c.metadata for c in chunks],
@@ -85,7 +85,7 @@ else:
     # La colección ya existe: cargarla sin reingerir
     embed_fn = OpenRouterEmbedding(OPENROUTER_API_KEY)
     collection = client.get_collection(
-        name=nombre, embedding_function=embed_fn)
+        name=nombre, embedding_function=embed_fn) # type: ignore
     print(f"Colección '{nombre}' ya existe ({collection.count()} vectores). "
           f"Usando datos existentes.")
 
@@ -96,7 +96,7 @@ resultados = collection.query(query_texts=[pregunta], n_results=3)
 
 print(f"\n🔍 Pregunta: {pregunta}\n")
 for i, (texto, meta) in enumerate(
-    zip(resultados["documents"][0], resultados["metadatas"][0])
+    zip(resultados["documents"][0], resultados["metadatas"][0]) # type: ignore
 ):
     print(f"Resultado {i + 1}:")
     print(f"  Fuente : {meta.get('source', 'N/A')}")

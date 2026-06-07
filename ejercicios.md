@@ -14,7 +14,7 @@
 
    El script test_load_pdf.py carga el PDF y lo divide en fragmentos. ¿Cuántos fragmentos se crean? ¿Cuál es el tamaño de cada fragmento? ¿Cómo se determina el tamaño de los fragmentos? 
 
-6. Basándote en el script bare_minimum.py, modifica test_load_pdf.py para que guarde los documentos en una base de datos vectorial ChromaDB (en la colección plan_donostia_gazteria) utilizando el modelo "deepseek/deepseek-v4-flash". Prueba a lanzar la consulta "¿Cuál es la misión del plan Gazteria?" para comprobar si el modelo responde correctamente.
+6. Basándote en el script `bare_minimum.py`, modifica test_load_pdf.py para que guarde los documentos en una base de datos vectorial ChromaDB (en la colección plan_donostia_gazteria) utilizando el modelo "deepseek/deepseek-v4-flash". Prueba a lanzar la consulta "¿Cuál es la misión del plan Gazteria?" para comprobar si el modelo responde correctamente.
 
 7. El fichero PDF Plan DONOSTIA GAZTERIA 2025-2027 (cas-plan-donostia-gazteria-2025-2027.pdf) proviene de https://www.donostia.eus/documents/d/asset-library-100431/cas-plan-donostia-gazteria-2025-2027. Sin embargo, el script de ingestión pdf_loader.py no guarda la URL de origen del documento. ¿Cómo modificarías el script para que guarde esta información?
 

@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# ChromaDB
+chroma_db/
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# Environment secrets
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

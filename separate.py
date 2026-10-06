@@ -32,6 +32,7 @@ def extract_text(pdf_path: str) -> str:
             PDFTOTEXT_CMD + [pdf_path, "-"],
             capture_output=True,
             text=True,
+            encoding="utf-8",  # pdftotext emits UTF-8; Windows defaults to cp1252
             check=True,
         )
         return result.stdout
@@ -39,7 +40,10 @@ def extract_text(pdf_path: str) -> str:
         sys.exit(
             "Error: 'pdftotext' not found. Install it with:\n"
             "  macOS:   brew install poppler\n"
-            "  Ubuntu:  sudo apt install poppler-utils"
+            "  Ubuntu:  sudo apt install poppler-utils\n"
+            "  Windows: download Poppler from "
+            "https://github.com/oschwartz10612/poppler-windows/releases\n"
+            "           and add its Library\\bin folder to PATH"
         )
     except subprocess.CalledProcessError as e:
         sys.exit(f"pdftotext failed (exit code {e.returncode}):\n{e.stderr}")
@@ -94,6 +98,10 @@ def split_columns(
 
 
 def main() -> None:
+    # Emoji/arrows in the progress output crash cp1252 consoles and redirected output on Windows
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="Auto-detect column position and split a 2-column PDF "
                     "into two text files (e.g. Euskera | Spanish)."

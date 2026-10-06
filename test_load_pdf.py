@@ -4,6 +4,11 @@ Test script for pdf_loader.load_pdf — RAG pipeline with ChromaDB + OpenRouter.
 Usage:
     python test_load_pdf.py sample.pdf
     python test_load_pdf.py sample.pdf --query "¿Cuál es la misión del plan Gazteria?"
+    python test_load_pdf.py sample.pdf --interactive --preview-chars 0
+    python test_load_pdf.py sample.pdf -i --rerank cohere/rerank-v3.5
+
+Los valores por defecto (bge-m3, chunks de 1200/200, sin cabeceras ni pies de
+página) salen de las pruebas de bench_rag.py; ver tabla en README.md.
 """
 
 import argparse
@@ -22,9 +27,43 @@ from pdf_loader import load_pdf
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
+# Cabeceras / pies de página que se repiten en todas las páginas del PDF.
+# Si se dejan, todos los chunks se parecen a preguntas sobre "el plan Gazteria".
+BOILERPLATE = [
+    r"PLAN DONOSTIA GAZTERIA\s*\|\s*[A-ZÁÉÍÓÚÑ ]+",
+    r"www\.\s*donostia\.eus/gazteria",
+    r"Plan de la Sección de Juventud del Ayuntamiento de San Sebastián 2025-2027",
+    r"KUDEAKETA_PLANA.*",
+    r"Orrialdea \d+",
+    r"(?m)^\s*\d{1,2}\s*$",  # números de página sueltos
+]
+
+
 def limpiar(texto: str) -> str:
     """Normaliza espacios en blanco."""
     return re.sub(r"\s+", " ", texto).strip()
+
+
+def quitar_boilerplate(texto: str) -> str:
+    """Elimina cabeceras, pies y números de página repetidos."""
+    for patron in BOILERPLATE:
+        texto = re.sub(patron, " ", texto)
+    return texto
+
+
+def rerank(api_key: str, model: str, pregunta: str,
+           documentos: list[str]) -> list[tuple[int, float]]:
+    """Reordena documentos por relevancia con un reranker de OpenRouter."""
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/rerank",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"model": model, "query": pregunta, "documents": documentos},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return [(r["index"], r["relevance_score"])
+            for r in sorted(resp.json()["results"],
+                            key=lambda r: -r["relevance_score"])]
 
 
 def generar_respuesta(api_key: str, pregunta: str,
@@ -87,6 +126,48 @@ def generar_respuesta(api_key: str, pregunta: str,
     return respuesta
 
 
+def responder(collection, api_key: str, pregunta: str, n_results: int,
+              rerank_model: str | None = None, n_candidates: int = 20) -> None:
+    """Recupera los chunks más similares a la pregunta y genera la respuesta."""
+    # ── 5. Consultar ───────────────────────────────────────────────────
+    print(f"\n🔍 Consulta: {pregunta}\n")
+    resultados = collection.query(
+        query_texts=[pregunta],
+        n_results=n_candidates if rerank_model else n_results)
+    chunks_recuperados = resultados["documents"][0]       # type: ignore
+    metadatas_recuperados = resultados["metadatas"][0]    # type: ignore
+    puntuaciones = [f"Distancia: {d:.4f}"
+                    for d in resultados["distances"][0]]  # type: ignore
+
+    # ── 5b. Rerank (opcional): reordena los candidatos y se queda con n ──
+    if rerank_model:
+        print(f"🔀 Reordenando {len(chunks_recuperados)} candidatos "
+              f"con {rerank_model}...\n")
+        orden = rerank(api_key, rerank_model, pregunta,
+                       chunks_recuperados)[:n_results]
+        chunks_recuperados = [chunks_recuperados[i] for i, _ in orden]
+        metadatas_recuperados = [metadatas_recuperados[i] for i, _ in orden]
+        puntuaciones = [f"Relevancia: {s:.4f} (antes #{i + 1})"
+                        for i, s in orden]
+
+    for i, (texto, meta, punt) in enumerate(
+        zip(chunks_recuperados, metadatas_recuperados, puntuaciones)
+    ):
+        print(f"Resultado {i + 1}:")
+        print(f"  Fuente : {meta.get('source', 'N/A')} "
+              f"(pág. {meta.get('page', 'N/A')})")
+        print(f"  {punt}")
+        print(f"  Texto  : {texto[:250]}...")
+        print()
+
+    # ── 6. Generar respuesta final con LLM ─────────────────────────────
+    print("🧠 Generando respuesta con LLM (deepseek/deepseek-v4-flash)...\n")
+    respuesta = generar_respuesta(
+        api_key, pregunta, chunks_recuperados, metadatas_recuperados
+    )
+    print(f"📝 Respuesta final:\n{respuesta}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
@@ -121,14 +202,49 @@ def main() -> None:
     parser.add_argument(
         "--embedding-model",
         type=str,
-        default="openai/text-embedding-3-small",
-        help="Embedding model to use. Default: openai/text-embedding-3-small",
+        default="baai/bge-m3",
+        help="Embedding model to use. Default: baai/bge-m3",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1200,
+        help="Chunk size in characters. Default: 1200",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=200,
+        help="Overlap between consecutive chunks. Default: 200",
+    )
+    parser.add_argument(
+        "--keep-boilerplate",
+        action="store_true",
+        help="Do not strip repeated page headers/footers before chunking.",
+    )
+    parser.add_argument(
+        "--rerank",
+        type=str,
+        default=None,
+        metavar="MODEL",
+        help="Rerank model (e.g. cohere/rerank-v3.5). Default: no rerank",
+    )
+    parser.add_argument(
+        "--n-candidates",
+        type=int,
+        default=20,
+        help="Chunks retrieved before reranking. Default: 20",
     )
     parser.add_argument(
         "--collection",
         type=str,
         default="plan_donostia_gazteria",
         help="ChromaDB collection name. Default: plan_donostia_gazteria",
+    )
+    parser.add_argument(
+        "--interactive", "-i",
+        action="store_true",
+        help="Ask questions one after another (ignores --query).",
     )
 
     args = parser.parse_args()
@@ -154,13 +270,18 @@ def main() -> None:
         print()
 
     # ── 2. Dividir en chunks ───────────────────────────────────────────
+    if not args.keep_boilerplate:
+        for document in documents:
+            document.page_content = quitar_boilerplate(document.page_content)
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=200,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
         length_function=len,
     )
-    chunks = splitter.split_documents(documents)
-    print(f"✂️  {len(chunks)} chunks creados (chunk_size=800, overlap=200)")
+    chunks = [c for c in splitter.split_documents(documents)
+              if limpiar(c.page_content)]
+    print(f"✂️  {len(chunks)} chunks creados (chunk_size={args.chunk_size}, "
+          f"overlap={args.chunk_overlap})")
 
     # ── 3-4. Embedding + ChromaDB ──────────────────────────────────────
     client = chromadb.PersistentClient(path="./chroma_db")
@@ -173,7 +294,19 @@ def main() -> None:
         except Exception:
             pass
 
-    colecciones = [c.name for c in client.list_collections()]
+    # Configuración con la que se indexa; si cambia, hay que reindexar
+    config = {
+        "pdf": args.pdf_path,
+        "embedding_model": args.embedding_model,
+        "chunk_size": args.chunk_size,
+        "chunk_overlap": args.chunk_overlap,
+        "boilerplate": args.keep_boilerplate,
+    }
+    colecciones = {c.name: c.metadata or {} for c in client.list_collections()}
+    if nombre in colecciones and colecciones[nombre] != config:
+        client.delete_collection(name=nombre)
+        del colecciones[nombre]
+        print(f"♻️  La configuración de '{nombre}' ha cambiado. Reindexando.")
     embed_fn = OpenRouterEmbedding(api_key, model_name=args.embedding_model)
 
     if nombre not in colecciones:
@@ -181,6 +314,7 @@ def main() -> None:
         collection = client.create_collection(
             name=nombre,
             embedding_function=embed_fn,  # type: ignore
+            metadata=config,
         )
         collection.add(
             documents=[limpiar(c.page_content) for c in chunks],
@@ -197,31 +331,29 @@ def main() -> None:
         print(f"📚 Colección '{nombre}' ya existe "
               f"({collection.count()} vectores). Usando datos existentes.")
 
-    # ── 5. Consultar ───────────────────────────────────────────────────
-    pregunta = args.query
-    print(f"\n🔍 Consulta: {pregunta}\n")
-    resultados = collection.query(
-        query_texts=[pregunta], n_results=args.n_results)
+    # ── 5-6. Consultar y generar respuesta ─────────────────────────────
+    def preguntar(pregunta: str) -> None:
+        responder(collection, api_key, pregunta, args.n_results,
+                  args.rerank, args.n_candidates)
 
-    for i, (texto, meta) in enumerate(
-        zip(resultados["documents"][0],
-            resultados["metadatas"][0])  # type: ignore
-    ):
-        print(f"Resultado {i + 1}:")
-        print(f"  Fuente : {meta.get('source', 'N/A')} "
-              f"(pág. {meta.get('page', 'N/A')})")
-        print(f"  Texto  : {texto[:250]}...")
-        print()
+    if not args.interactive:
+        preguntar(args.query)
+        return
 
-    # ── 6. Generar respuesta final con LLM ─────────────────────────────
-    chunks_recuperados = resultados["documents"][0]       # type: ignore
-    metadatas_recuperados = resultados["metadatas"][0]    # type: ignore
-    print("🧠 Generando respuesta con LLM (deepseek/deepseek-v4-flash)...\n")
-    respuesta = generar_respuesta(
-        api_key, pregunta, chunks_recuperados, metadatas_recuperados
-    )
-    print(f"📝 Respuesta final:\n{respuesta}")
-
+    print("\n💬 Modo interactivo. Escribe una pregunta "
+          "(línea vacía, 'salir' o Ctrl+D para terminar).")
+    while True:
+        try:
+            pregunta = input("\n❓ Pregunta: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not pregunta or pregunta.lower() in {"salir", "exit", "quit"}:
+            break
+        try:
+            preguntar(pregunta)
+        except requests.RequestException as e:
+            print(f"⚠️  Error llamando a OpenRouter: {e}")
 
 if __name__ == "__main__":
     main()

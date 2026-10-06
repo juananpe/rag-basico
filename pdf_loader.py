@@ -31,7 +31,7 @@ def load_pdf(pdf_path: str | Path) -> list[Document]:
 
     documents: list[Document] = []
 
-    for page_number, page in enumerate(reader.pages):
+    for page_number, page in enumerate(reader.pages, start=1):
         text = page.extract_text() or ""
 
         documents.append(
